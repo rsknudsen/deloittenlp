@@ -1,0 +1,136 @@
+---
+title: "Train Word2Vec on Danish Wikipedia"
+author: "Rasmus Skov Sanborn Knudsen"
+date: "`r Sys.Date()`"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Vignette Title}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+library(deloittenlp)
+```
+
+This vignette trains a Danish Word2Vec model using Wikipedia from the data-directory and functions from the R-directory. 
+
+## Get wikipedia
+
+First step is to import wikipedia into R and check out the format:
+
+```{r wikidk}
+data(wikidk)
+#wikidk <- wikidk[1:1000] # Uncomment to make vignette run faster
+wikidk[1]
+```
+
+Lets tidy it up so that it fits the Word2Vec framework, tokenizing it by sentence:
+
+```{r tokenize_wikidk}
+library(dplyr)
+library(tokenizers)
+
+wikidk <- tokenize_sentences(wikidk) %>%
+  unlist()
+```
+Data is now ready for analysis. 
+
+
+## Train general Word2Vec
+
+We will use Keras for training a general Danish Word2Vec-model. Note that you need Tensorflow in order to run this model!
+
+The following code is taken directly from https://blogs.rstudio.com/tensorflow/posts/2017-12-22-word-embeddings-with-keras/. 
+
+```{r tokenize}
+library(keras)
+#install_keras()
+
+tokenizer <- text_tokenizer(num_words = 20000)
+tokenizer %>% fit_text_tokenizer(wikidk)
+```
+
+Added this piece myself, to avoid short sentences:
+
+```{r}
+enough_words <- tokenizer$texts_to_sequences(wikidk) %>%
+  sapply(function(x) length(x) > 3)
+wikidk <- wikidk[enough_words]
+
+tokenizer <- text_tokenizer(num_words = 20000)
+tokenizer %>% fit_text_tokenizer(wikidk)
+```
+
+
+
+```{r skipgrams_generator}
+library(reticulate)
+library(purrr)
+skipgrams_generator <- function(text, tokenizer, window_size, negative_samples) {
+  gen <- texts_to_sequences_generator(tokenizer, sample(text))
+  function() {
+    skip <- generator_next(gen) %>%
+      skipgrams(
+        vocabulary_size = tokenizer$num_words, 
+        window_size = window_size, 
+        negative_samples = 1
+      )
+    x <- transpose(skip$couples) %>% map(. %>% unlist %>% as.matrix(ncol = 1))
+    y <- skip$labels %>% as.matrix(ncol = 1)
+    list(x, y)
+  }
+}
+```
+
+```{r parameters}
+embedding_size <- 128  # Dimension of the embedding vector.
+skip_window <- 5       # How many words to consider left and right.
+num_sampled <- 1       # Number of negative examples to sample for each word.
+```
+
+```{r model_specs}
+input_target <- layer_input(shape = 1)
+input_context <- layer_input(shape = 1)
+```
+
+```{r architecture}
+embedding <- layer_embedding(
+  input_dim = tokenizer$num_words + 1, 
+  output_dim = embedding_size, 
+  input_length = 1, 
+  name = "embedding"
+)
+
+target_vector <- input_target %>% 
+  embedding() %>% 
+  layer_flatten()
+
+context_vector <- input_context %>%
+  embedding() %>%
+  layer_flatten()
+```
+
+```{r output}
+dot_product <- layer_dot(list(target_vector, context_vector), axes = 1)
+output <- layer_dense(dot_product, units = 1, activation = "sigmoid")
+```
+
+```{r compile}
+keras_model <- keras_model(inputs = list(input_target, input_context), outputs = output)
+keras_model %>% compile(loss = "binary_crossentropy", optimizer = "adam")
+
+summary(keras_model)
+```
+
+```{r fit}
+keras_model %>%
+  fit_generator(
+    skipgrams_generator(wikidk, tokenizer, skip_window, negative_samples), 
+    steps_per_epoch = 1000, epochs = 5
+    )
+```
