@@ -49,7 +49,7 @@ The following code is taken directly from https://blogs.rstudio.com/tensorflow/p
 
 ```{r tokenize}
 library(keras)
-#install_keras()
+install_keras()
 
 tokenizer <- text_tokenizer(num_words = 20000)
 tokenizer %>% fit_text_tokenizer(wikidk)
